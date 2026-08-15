@@ -1,4 +1,5 @@
 using UnityEngine;
+using System.Collections;
 
 public class Hare_Control : MonoBehaviour
 {
@@ -6,18 +7,28 @@ public class Hare_Control : MonoBehaviour
     private Rigidbody2D RB2;
     public LayerMask LM;
     
-    //Standard Movement - Physics Variables
-    public float walkSpeed, dashSpeed, airSpeed, jumpForce;
-    public float sharpGravRate, hangGravRate, switchPoint;
+    //Ground Movement - Physics Variables
+    public float dirtWalkSpeed, dirtDashSpeed, iceAirAccel, dirtJumpForce;
+    public float sharpGravRate, hangGravRate, gravTransitionHangBound, gravTransitionSharpBound, maxFallSpeed;
+
+    //Ice Movement - Physics Variables
+
     public bool grounded, lookingRight;
 
     //Skating Movement - Physics Variables
 
+    //State management
+    private bool onIce;
+
     //Input variables
     private int xIn, yIn;
     private KeyCode Jump, Dash;
-    private bool jumpBuffer;
-    public int overX;
+    private float jumpBuffer, dashBuffer;
+    public float maxDashDuration;
+
+
+    public int overX;  //temporary; used to override movement input
+    public float velY;
     
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
@@ -25,7 +36,9 @@ public class Hare_Control : MonoBehaviour
         RB2 = GetComponent<Rigidbody2D>();
         grounded = false;
         Jump = KeyCode.Space;
-        jumpBuffer = false;
+        Dash = KeyCode.LeftShift;
+        jumpBuffer = 0;
+        dashBuffer = 0;
     }
 
     // Update is called once per frame
@@ -38,32 +51,30 @@ public class Hare_Control : MonoBehaviour
         if(xIn != 0)
             lookingRight = xIn > 0;
 
+        if (Input.GetKeyDown(Dash) && dashBuffer == 0) //May change so dashBuffer just has to be <= 0 (so you can spam dashes)
+        {
+            //Stop coroutine (just in case)
+            StopCoroutine("DashBuffer");
+
+            //Set buffer value
+            dashBuffer = 0.15f;
+
+            //Then start couroutine
+            StartCoroutine("DashBuffer");
+        }
+
         if (Input.GetKeyDown(Jump))
-            jumpBuffer = true;
-
-        /*
-        //Update velocity / apply forces
-        if(grounded)
         {
-            //Set horiz movement
-            float hSpeed = xIn * walkSpeed;
-            float vSpeed = RB2.linearVelocityY;
-            if (Input.GetKeyDown(Jump))
-            {
-                vSpeed = jumpForce;
-                grounded = false;
-            }
+            //Stop coroutine (just in case)
+            StopCoroutine("JumpBuffer");
 
-            RB2.linearVelocity = new Vector2(hSpeed, vSpeed - sharpGravRate * Time.deltaTime);
-        }
-        else
-        {
-            //Apply lateral acceleration and gravity
-            float hSpeed = RB2.linearVelocityX + (xIn * airSpeed * Time.deltaTime);
-            hSpeed = Mathf.Clamp(hSpeed, -walkSpeed, walkSpeed);
-            RB2.linearVelocity = new Vector2(hSpeed, RB2.linearVelocityY - sharpGravRate * Time.deltaTime);
-        }
-        */
+            //Set buffer value
+            jumpBuffer = 0.15f;
+
+            //Then start couroutine
+            StartCoroutine("JumpBuffer");
+        }         
+
         //Update states?
     }
 
@@ -84,34 +95,95 @@ public class Hare_Control : MonoBehaviour
             grounded = false;
         }
 
-        //SECOND - we set our desired velocity
-        //Set desired horizontal velocity based on x input (depending on if we are grounded
-        if (grounded)
+        //If we are grounded, we also want to determine which type of surface we are on (dirt or ice)
+        if(hit)
+            onIce = hit.transform.gameObject.CompareTag("ice");
+
+        //Remaining methods change based on dirt or ice!
+
+        //SECOND (DIRT VER.) - we set our desired velocity
+        if (!onIce)
         {
-            RB2.linearVelocityX = xIn * walkSpeed;
-        }
-        else
-        {
-            float hSpeed = RB2.linearVelocityX + (xIn * airSpeed * Time.fixedDeltaTime);
-            hSpeed = Mathf.Clamp(hSpeed, -walkSpeed, walkSpeed);
-            RB2.linearVelocityX = hSpeed;
+            //HORIZONTAL: Instant control whether on ground or air
+            //But can only control direction when not dashing (dash buffer is 0 or greater)
+            if(dashBuffer >= 0)
+                RB2.linearVelocityX = xIn * dirtWalkSpeed;
+
+            //Check if we got a dash input
+            if(dashBuffer > 0)
+            {
+                // if holding a direction, dash in that direction
+                if (xIn != 0)
+                    RB2.linearVelocityX = dirtDashSpeed * xIn;
+                //If not holding a direction, dash in the direction we are facing
+                else
+                    RB2.linearVelocityX = dirtDashSpeed * (lookingRight ? 1 : -1);
+                //And if in the air, cancel our vertical velocity
+                if (!grounded)
+                    RB2.linearVelocityY = 0;
+
+                //Then reset our dash state (use negative buffer to determine duration)
+                //Stop coroutine (just in case)
+                StopCoroutine("DashBuffer");
+
+                //Set buffer value
+                dashBuffer = -maxDashDuration;
+
+                //Then start couroutine
+                StartCoroutine("DashBuffer");
+            }
+
+            //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
+            if(grounded && jumpBuffer > 0)
+            {
+                RB2.linearVelocityY = dirtJumpForce; //Change to weak ground jump force
+                grounded = false;
+
+                //End coroutine
+                StopCoroutine("JumpBuffer");
+                jumpBuffer = 0;
+            }
         }
 
-        //If we received a jump input, set desired vertical speed
-        if(grounded && jumpBuffer == true)
+        //SECOND (ICE VER.) - we set our desired velocity
+        //Set desired horizontal velocity based on x input (depending on if we are grounded
+        else
         {
-            RB2.linearVelocityY = jumpForce;
-            grounded = false;
-            jumpBuffer = false;
+            //HORIZONTAL: As a test, just keep slippery physics on ice
+            float hSpeed = RB2.linearVelocityX + (xIn * iceAirAccel * Time.fixedDeltaTime);
+            hSpeed = Mathf.Clamp(hSpeed, -dirtWalkSpeed, dirtWalkSpeed);
+            RB2.linearVelocityX = hSpeed;
+
+            //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
+            if (grounded && jumpBuffer > 0)
+            {
+                RB2.linearVelocityY = dirtJumpForce; //Change to weak ground jump force
+                grounded = false;
+
+                //End coroutine
+                StopCoroutine("JumpBuffer");
+                jumpBuffer = 0;
+            }
         }
 
         //THIRD - We apply forces to our velocity (as needed)
-        if(!grounded)
+        if (!grounded && dashBuffer > (-maxDashDuration) / 2)
         {
+            //Check absolute Y velocity against our scale
+            float range = Mathf.Clamp((Mathf.Abs(RB2.linearVelocityY) - gravTransitionHangBound) / (gravTransitionSharpBound - gravTransitionHangBound), 0, 1);
+
+            //Calculate scaled gravity
+            float gravScale = hangGravRate + range * (sharpGravRate - hangGravRate);
+
             //Apply gravity when airborne
-            RB2.linearVelocityY -= sharpGravRate * Time.fixedDeltaTime;
+            if(RB2.linearVelocityY > -maxFallSpeed)
+            {
+                RB2.linearVelocityY = Mathf.Clamp(RB2.linearVelocityY - (gravScale * Time.fixedDeltaTime), -maxFallSpeed, 1000);
+            }
+            //RB2.linearVelocityY -= sharpGravRate * Time.fixedDeltaTime;
         }
 
+        velY = RB2.linearVelocityY;
     }
 
     private void LateUpdate()
@@ -129,6 +201,35 @@ public class Hare_Control : MonoBehaviour
         {
             Debug.DrawLine(transform.position, transform.position + Vector3.down * (0.2f), Color.yellow);
         }
+    }
+
+    IEnumerator JumpBuffer()
+    {
+        while (jumpBuffer > 0)
+        {
+            //Reduce value of jump buffer
+            jumpBuffer = Mathf.Clamp(jumpBuffer - Time.deltaTime, 0, 0.20f);
+
+            //Then wait
+            yield return null;
+        }
+        //Ends once jump buffer equals 0
+    }
+
+    IEnumerator DashBuffer()
+    {
+        while (dashBuffer != 0)
+        {
+            //Reduce value of jump buffer
+            if(dashBuffer > 0)
+                dashBuffer = Mathf.Clamp(dashBuffer - Time.deltaTime, 0, 0.20f);
+            else
+                dashBuffer = Mathf.Clamp(dashBuffer + Time.deltaTime, -5, 0);
+
+            //Then wait
+            yield return null;
+        }
+        //Ends once jump buffer equals 0
     }
 
     /*
