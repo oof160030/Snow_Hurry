@@ -1,34 +1,48 @@
 using UnityEngine;
 using System.Collections;
+using TMPro;
 
 public class Hare_Control : MonoBehaviour
 {
     //Access to components
     private Rigidbody2D RB2;
     public LayerMask LM;
-    
+
     //Ground Movement - Physics Variables
-    public float dirtWalkSpeed, dirtDashSpeed, iceAirAccel, dirtJumpForce;
+    [Header("Standard Physics Variables")]
+    public float dirtWalkSpeed;
+    public float dirtDashSpeed, dirtJumpForce;
     public float sharpGravRate, hangGravRate, gravTransitionHangBound, gravTransitionSharpBound, maxFallSpeed;
 
     //Ice Movement - Physics Variables
+    [Header("Ice Physics Variables")]
+    public float skateChargeRate;
+    public float skateDecayRate, brakeChargeRate;
+    public float skateSpeedLow, skateSpeedMedium, skateSpeedHigh, brakeSpeed;
+    public float skateJumpForce, skateAirAccel;
+    private int skateGear;
+    private float skateCharge, currentSkateSpeed;
 
-    public bool grounded, lookingRight;
-
-    //Skating Movement - Physics Variables
-
-    //State management
+    [Header("Universal Movement Variables")]
+    public bool grounded;
+    public bool lookingRight;
+    public float maxDashDuration;
+    public float dashSpeedMultiplier;
+    private bool canAirDash;
+    private bool justGrounded, justAirborne;
     private bool onIce;
 
     //Input variables
     private int xIn, yIn;
     private KeyCode Jump, Dash;
     private float jumpBuffer, dashBuffer;
-    public float maxDashDuration;
 
-
+    [Header("Debug Variables")]
     public int overX;  //temporary; used to override movement input
     public float velY;
+    [Range(-1, 1)]
+    public float displaySkateCharge;
+    public TextMeshProUGUI debugtext;
     
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
@@ -39,6 +53,8 @@ public class Hare_Control : MonoBehaviour
         Dash = KeyCode.LeftShift;
         jumpBuffer = 0;
         dashBuffer = 0;
+        skateCharge = 0;
+        canAirDash = true;
     }
 
     // Update is called once per frame
@@ -48,8 +64,26 @@ public class Hare_Control : MonoBehaviour
         xIn = (Input.GetKey(KeyCode.LeftArrow) ? -1 : 0) + (Input.GetKey(KeyCode.RightArrow) ? 1 : 0);
         if (overX == 1 || overX == -1)
             xIn = overX;
+
         if(xIn != 0)
-            lookingRight = xIn > 0;
+        {
+            //If not on ice (or on ice and not moving), automatically look in direction of input
+            if(!onIce || (onIce && grounded && skateGear == 0) )
+                lookingRight = xIn > 0;
+
+            //if on ice & grounded, our looking direction changes when we dash in a new direction
+            else if(onIce && grounded)
+            {
+                //handled elsewhere
+            }
+
+            //if on ice and airborne, our looking direction changes when our velocity changes
+            else if(onIce && !grounded && RB2.linearVelocityX != 0)
+            {
+                lookingRight = RB2.linearVelocityX > 0;
+            }
+        }
+            
 
         if (Input.GetKeyDown(Dash) && dashBuffer == 0) //May change so dashBuffer just has to be <= 0 (so you can spam dashes)
         {
@@ -88,49 +122,59 @@ public class Hare_Control : MonoBehaviour
         {
             //We are airbone (and falling), but should become grounded; Change state!
             grounded = true;
+            justGrounded = true;
+            canAirDash = true;
         }
         else if(grounded && !hit)
         {
             //We were grounded, but should become airborne; Change state!
             grounded = false;
+            justAirborne = true;
         }
 
         //If we are grounded, we also want to determine which type of surface we are on (dirt or ice)
         if(hit)
+        {
+            bool prevIce = onIce;
             onIce = hit.transform.gameObject.CompareTag("ice");
 
+            //if moving onto ice for first time, reset basic ice mechanics
+            if(onIce && !prevIce)
+            {
+                skateGear = 1;
+                skateCharge = 0;
+                currentSkateSpeed = skateSpeedLow;
+            }
+        }
         //Remaining methods change based on dirt or ice!
 
         //SECOND (DIRT VER.) - we set our desired velocity
         if (!onIce)
         {
             //HORIZONTAL: Instant control whether on ground or air
-            //But can only control direction when not dashing (dash buffer is 0 or greater)
+            //But can control direction only when not dashing (dash buffer is 0 or greater)
             if(dashBuffer >= 0)
                 RB2.linearVelocityX = xIn * dirtWalkSpeed;
 
             //Check if we got a dash input
             if(dashBuffer > 0)
             {
-                // if holding a direction, dash in that direction
-                if (xIn != 0)
-                    RB2.linearVelocityX = dirtDashSpeed * xIn;
-                //If not holding a direction, dash in the direction we are facing
-                else
+                //Always permit dash in the air
+                if(grounded)
+                {
                     RB2.linearVelocityX = dirtDashSpeed * (lookingRight ? 1 : -1);
-                //And if in the air, cancel our vertical velocity
-                if (!grounded)
+                    //Then reset dash input buffer
+                    ClearDashBuffer();
+                }
+                //In the air, only allow once per airtime
+                else if (canAirDash)
+                {
+                    canAirDash = false;
                     RB2.linearVelocityY = 0;
-
-                //Then reset our dash state (use negative buffer to determine duration)
-                //Stop coroutine (just in case)
-                StopCoroutine("DashBuffer");
-
-                //Set buffer value
-                dashBuffer = -maxDashDuration;
-
-                //Then start couroutine
-                StartCoroutine("DashBuffer");
+                    RB2.linearVelocityX = dirtDashSpeed * (lookingRight ? 1 : -1);
+                    //Then reset dash input buffer
+                    ClearDashBuffer();
+                }
             }
 
             //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
@@ -149,15 +193,143 @@ public class Hare_Control : MonoBehaviour
         //Set desired horizontal velocity based on x input (depending on if we are grounded
         else
         {
-            //HORIZONTAL: As a test, just keep slippery physics on ice
-            float hSpeed = RB2.linearVelocityX + (xIn * iceAirAccel * Time.fixedDeltaTime);
-            hSpeed = Mathf.Clamp(hSpeed, -dirtWalkSpeed, dirtWalkSpeed);
-            RB2.linearVelocityX = hSpeed;
+            //If we JUST landed, and we are holding a direction, set our looking direction based on the direction
+            if (justGrounded && xIn != 0)
+                lookingRight = xIn > 0;
+
+            //Easy way to exit gear 0: just hold any direction
+            if(skateGear == 0 & xIn != 0 && skateCharge == 1)
+            {
+                skateGear = 1;
+                currentSkateSpeed = skateSpeedLow;
+                skateCharge = 0;
+            }
+
+            //HORIZONTAL: if grounded, horizontal movement is automatic based on facing
+            if(grounded && dashBuffer >= 0)
+                RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1);
+
+            //May later allow even higher momentum preservation in gear 3?
+            //Otherwise, air control is acceleration based
+            else if(dashBuffer >= 0)
+            {
+                float hSpeed = RB2.linearVelocityX + (xIn * skateAirAccel * Time.fixedDeltaTime);
+                //Clamp value depends on our gear
+                float clampVal = skateGear == 0 ? skateSpeedLow : currentSkateSpeed;
+                //But if we are going faster than the clamp, allow it (but still can't accelerate)
+                if (Mathf.Abs(RB2.linearVelocityX) > clampVal)
+                    clampVal = Mathf.Abs(RB2.linearVelocityX);
+                hSpeed = Mathf.Clamp(hSpeed, -clampVal, clampVal);
+                RB2.linearVelocityX = hSpeed;
+            }
+
+            //Ground Dash (Gear Up, Direction Change): A dash input (if valid) can do two things::
+            if (dashBuffer > 0 && grounded)
+            {
+                //Gear Up: If charge is full (or if not moving), increase gear
+                if(skateGear == 0)
+                {
+                    skateGear = 1;
+                    currentSkateSpeed = skateSpeedLow;
+                    RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
+                    skateCharge = 0;
+                    ClearDashBuffer();
+                }
+                else if(skateGear != 3 && skateCharge == 1)
+                {
+                    skateGear++;
+                    currentSkateSpeed = skateGear == 2 ? skateSpeedMedium : skateSpeedHigh;
+                    RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
+                    skateCharge = 0;
+                    ClearDashBuffer();
+                }
+                //Direction Change: If holding back when dashing, change direction (& temporary speed boost)
+                else if(xIn != 0 && (xIn > 0 != lookingRight))
+                {
+                    lookingRight = xIn > 0;
+                    skateCharge = 0;
+                    RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
+                    ClearDashBuffer();
+                }
+                //Max Velocity: If holding forwards, but charge wasn't full, fill charge (& temporary speed boost)
+                else
+                {
+                    skateCharge = 1;
+                    RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
+                    ClearDashBuffer();
+                }
+            }
+
+            //Air Dash: A dash input in the air will just change our direction and lock in speed
+            //Also check if air dash is allowed (only one per airtime!)
+            else if(dashBuffer > 0 && !grounded && canAirDash)
+            {
+                //If our current gear is 0, immediately gear up to 1. Then...
+                if (skateGear == 0)
+                {
+                    skateGear = 1;
+                    currentSkateSpeed = skateSpeedLow;
+                }
+
+                // ...if holding a direction, dash in that direction (with speed boost)
+                if (xIn != 0)
+                {
+                    RB2.linearVelocityX = currentSkateSpeed * xIn * dashSpeedMultiplier;
+                    //And update facing if needed
+                    lookingRight = xIn > 0;
+                }
+                // or if not holding a direction, dash in the direction we are facing
+                else
+                {
+                    RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
+                }
+
+                skateCharge = 0;
+                ClearDashBuffer();
+                RB2.linearVelocityY = 0;
+                canAirDash = false;
+            }
+
+            //Charge and Brake Functions
+            if(grounded)
+            {
+                //Charge: if we are holding forwards and on the ground, we can build charge
+                if (xIn != 0 && (xIn > 0 == lookingRight))
+                {
+                    //Gain skate charge
+                    skateCharge = Mathf.Clamp(skateCharge + skateChargeRate * Time.fixedDeltaTime, -1, 1);
+                }
+                //Brake: If we are holding backwards and on the ground, reduce & lose charge
+                else if (xIn != 0 && (xIn > 0 != lookingRight))
+                {
+                    //Override speed with brake speed
+                    RB2.linearVelocityX = brakeSpeed * (lookingRight ? 1 : -1);
+
+                    //Reduce charge
+                    skateCharge = Mathf.Clamp(skateCharge - brakeChargeRate * Time.fixedDeltaTime, -1, 1);
+
+                    //And if brake charge hits -1, reduce gear
+                    if(skateCharge == -1)
+                    {
+                        skateGear--;
+                        currentSkateSpeed = GetSkateSpeed(skateGear);
+                        skateCharge = 0;
+                    }
+                }
+                //Charge Decay (if no input held, charge will eventually die)
+                else if (xIn == 0 && skateCharge != 0)
+                {
+                    if (skateCharge > 0)
+                        skateCharge = Mathf.Clamp(skateCharge - skateDecayRate * Time.fixedDeltaTime, 0, 1);
+                    else
+                        skateCharge = Mathf.Clamp(skateCharge + skateDecayRate * Time.fixedDeltaTime, -1, 0);
+                }
+            }
 
             //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
             if (grounded && jumpBuffer > 0)
             {
-                RB2.linearVelocityY = dirtJumpForce; //Change to weak ground jump force
+                RB2.linearVelocityY = skateJumpForce;
                 grounded = false;
 
                 //End coroutine
@@ -183,7 +355,15 @@ public class Hare_Control : MonoBehaviour
             //RB2.linearVelocityY -= sharpGravRate * Time.fixedDeltaTime;
         }
 
+        if(justGrounded || justAirborne)
+        {
+            justGrounded = false;
+            justAirborne = false;
+        }
+
         velY = RB2.linearVelocityY;
+        displaySkateCharge = skateCharge;
+        debugtext.text = "Debug Stats:\nSktGr: " + skateGear + "\nCharge : " + skateCharge.ToString("0.00");
     }
 
     private void LateUpdate()
@@ -200,6 +380,35 @@ public class Hare_Control : MonoBehaviour
         else
         {
             Debug.DrawLine(transform.position, transform.position + Vector3.down * (0.2f), Color.yellow);
+        }
+    }
+
+    private void ClearDashBuffer()
+    {
+        //Stop coroutine (just in case)
+        StopCoroutine("DashBuffer");
+
+        //Set buffer value
+        dashBuffer = -maxDashDuration;
+
+        //Then start couroutine
+        StartCoroutine("DashBuffer");
+    }
+
+    private float GetSkateSpeed(int gear)
+    {
+        switch(gear)
+        {
+            case 0:
+                return 0;
+            case 1:
+                return skateSpeedLow;
+            case 2:
+                return skateSpeedMedium;
+            case 3:
+                return skateSpeedHigh;
+            default:
+                return 0;
         }
     }
 
