@@ -28,6 +28,9 @@ public class Hare_Control : MonoBehaviour
     public bool lookingRight;
     public float maxDashDuration;
     public float dashSpeedMultiplier;
+    public int variableJumpMultiplier;
+    public float maxCoyoteTime;
+    private float coyoteTime;
     private bool canAirDash;
     private bool justGrounded, justAirborne;
     private bool onIce;
@@ -36,9 +39,9 @@ public class Hare_Control : MonoBehaviour
     private int xIn, yIn;
     private KeyCode Jump, Dash;
     private float jumpBuffer, dashBuffer;
+    private bool jumpRelease;
 
     [Header("Debug Variables")]
-    public int overX;  //temporary; used to override movement input
     public float velY;
     [Range(-1, 1)]
     public float displaySkateCharge;
@@ -55,6 +58,8 @@ public class Hare_Control : MonoBehaviour
         dashBuffer = 0;
         skateCharge = 0;
         canAirDash = true;
+        jumpRelease = false;
+        coyoteTime = 0;
     }
 
     // Update is called once per frame
@@ -62,10 +67,9 @@ public class Hare_Control : MonoBehaviour
     {
         //Get keyboard inputs
         xIn = (Input.GetKey(KeyCode.LeftArrow) ? -1 : 0) + (Input.GetKey(KeyCode.RightArrow) ? 1 : 0);
-        if (overX == 1 || overX == -1)
-            xIn = overX;
+        yIn = (Input.GetKey(KeyCode.DownArrow) ? -1 : 0) + (Input.GetKey(KeyCode.UpArrow) ? 1 : 0);
 
-        if(xIn != 0)
+        if (xIn != 0)
         {
             //If not on ice (or on ice and not moving), automatically look in direction of input
             if(!onIce || (onIce && grounded && skateGear == 0) )
@@ -104,10 +108,14 @@ public class Hare_Control : MonoBehaviour
 
             //Set buffer value
             jumpBuffer = 0.15f;
+            jumpRelease = false;
 
             //Then start couroutine
             StartCoroutine("JumpBuffer");
-        }         
+        }
+
+        if (Input.GetKeyUp(Jump) && !jumpRelease)
+            jumpRelease = true;
 
         //Update states?
     }
@@ -124,6 +132,7 @@ public class Hare_Control : MonoBehaviour
             grounded = true;
             justGrounded = true;
             canAirDash = true;
+            coyoteTime = maxCoyoteTime;
         }
         else if(grounded && !hit)
         {
@@ -146,6 +155,11 @@ public class Hare_Control : MonoBehaviour
                 currentSkateSpeed = skateSpeedLow;
             }
         }
+
+        if(!grounded && coyoteTime > 0)
+        {
+            coyoteTime = Mathf.Clamp(coyoteTime - Time.fixedDeltaTime, 0, maxCoyoteTime);
+        }
         //Remaining methods change based on dirt or ice!
 
         //SECOND (DIRT VER.) - we set our desired velocity
@@ -159,7 +173,7 @@ public class Hare_Control : MonoBehaviour
             //Check if we got a dash input
             if(dashBuffer > 0)
             {
-                //Always permit dash in the air
+                //Always permit dash on the ground
                 if(grounded)
                 {
                     RB2.linearVelocityX = dirtDashSpeed * (lookingRight ? 1 : -1);
@@ -178,10 +192,11 @@ public class Hare_Control : MonoBehaviour
             }
 
             //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
-            if(grounded && jumpBuffer > 0)
+            if((grounded || coyoteTime > 0) && jumpBuffer > 0)
             {
                 RB2.linearVelocityY = dirtJumpForce; //Change to weak ground jump force
                 grounded = false;
+                coyoteTime = -1;
 
                 //End coroutine
                 StopCoroutine("JumpBuffer");
@@ -197,8 +212,8 @@ public class Hare_Control : MonoBehaviour
             if (justGrounded && xIn != 0)
                 lookingRight = xIn > 0;
 
-            //Easy way to exit gear 0: just hold any direction
-            if(skateGear == 0 & xIn != 0 && skateCharge == 1)
+            //Easy way to exit gear 0: hold left or right while either at full charge or as you land!
+            if(skateGear == 0 & xIn != 0 && (skateCharge == 1 || justGrounded))
             {
                 skateGear = 1;
                 currentSkateSpeed = skateSpeedLow;
@@ -254,7 +269,7 @@ public class Hare_Control : MonoBehaviour
                 //Max Velocity: If holding forwards, but charge wasn't full, fill charge (& temporary speed boost)
                 else
                 {
-                    skateCharge = 1;
+                    skateCharge = Mathf.Clamp(skateCharge + 0.1f, -1, 1);
                     RB2.linearVelocityX = currentSkateSpeed * (lookingRight ? 1 : -1) * dashSpeedMultiplier;
                     ClearDashBuffer();
                 }
@@ -327,10 +342,11 @@ public class Hare_Control : MonoBehaviour
             }
 
             //VERTICAL: Jump input is a short hop (may split jumping into a separate method)
-            if (grounded && jumpBuffer > 0)
+            if ((grounded || coyoteTime > 0) && jumpBuffer > 0)
             {
                 RB2.linearVelocityY = skateJumpForce;
                 grounded = false;
+                coyoteTime = -1;
 
                 //End coroutine
                 StopCoroutine("JumpBuffer");
@@ -344,11 +360,15 @@ public class Hare_Control : MonoBehaviour
             //Check absolute Y velocity against our scale
             float range = Mathf.Clamp((Mathf.Abs(RB2.linearVelocityY) - gravTransitionHangBound) / (gravTransitionSharpBound - gravTransitionHangBound), 0, 1);
 
-            //Calculate scaled gravity
-            float gravScale = hangGravRate + range * (sharpGravRate - hangGravRate);
+            
+            //Variable gravity rate: if not yet in hang gravity (range > 0), and jump button released, double gravity
+            float varJumpFactor = (RB2.linearVelocityY > 0 && range > 0 && jumpRelease ? variableJumpMultiplier : 1);
+
+            //Calculate scaled gravity based on vertical velocity and whether jump input is still being held
+            float gravScale = hangGravRate + range * ((sharpGravRate * varJumpFactor) - hangGravRate);
 
             //Apply gravity when airborne
-            if(RB2.linearVelocityY > -maxFallSpeed)
+            if (RB2.linearVelocityY > -maxFallSpeed)
             {
                 RB2.linearVelocityY = Mathf.Clamp(RB2.linearVelocityY - (gravScale * Time.fixedDeltaTime), -maxFallSpeed, 1000);
             }

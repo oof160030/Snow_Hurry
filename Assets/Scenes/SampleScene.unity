@@ -715,7 +715,8 @@ MonoBehaviour:
   lookingRight: 1
   maxDashDuration: 0.3
   dashSpeedMultiplier: 1.5
-  overX: 0
+  variableJumpMultiplier: 3
+  maxCoyoteTime: 0.3
   velY: 0
   displaySkateCharge: 0
   debugtext: {fileID: 1698502598}
